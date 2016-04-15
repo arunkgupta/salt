@@ -2,6 +2,11 @@
 '''
 Manage and query NPM packages.
 '''
+from __future__ import absolute_import
+try:
+    from shlex import quote as _cmd_quote  # pylint: disable=E0611
+except ImportError:
+    from pipes import quote as _cmd_quote
 
 # Import python libs
 import json
@@ -10,6 +15,7 @@ import distutils.version  # pylint: disable=import-error,no-name-in-module
 
 # Import salt libs
 import salt.utils
+import salt.modules.cmdmod
 from salt.exceptions import CommandExecutionError
 
 
@@ -25,7 +31,15 @@ def __virtual__():
     '''
     Only work when npm is installed.
     '''
-    return salt.utils.which('npm') is not None
+    try:
+        if salt.utils.which('npm') is not None:
+            _check_valid_version()
+            return True
+        else:
+            return (False, 'npm execution module could not be loaded '
+                           'because the npm binary could not be located')
+    except CommandExecutionError as exc:
+        return (False, str(exc))
 
 
 def _check_valid_version():
@@ -35,7 +49,7 @@ def _check_valid_version():
     '''
     # pylint: disable=no-member
     npm_version = distutils.version.LooseVersion(
-        __salt__['cmd.run']('npm --version'))
+        salt.modules.cmdmod.run('npm --version', python_shell=True))
     valid_version = distutils.version.LooseVersion('1.2')
     # pylint: enable=no-member
     if npm_version < valid_version:
@@ -47,9 +61,13 @@ def _check_valid_version():
 
 
 def install(pkg=None,
+            pkgs=None,
             dir=None,
             runas=None,
-            registry=None):
+            registry=None,
+            env=None,
+            dry_run=False,
+            silent=True):
     '''
     Install an NPM package.
 
@@ -61,6 +79,11 @@ def install(pkg=None,
         A package name in any format accepted by NPM, including a version
         identifier
 
+    pkgs
+        A list of package names in the same format as the ``name`` parameter
+
+        .. versionadded:: 2014.7.0
+
     dir
         The target directory in which to install the package, or None for
         global installation
@@ -71,7 +94,29 @@ def install(pkg=None,
     registry
         The NPM registry to install the package from.
 
-        .. versionadded:: Helium
+        .. versionadded:: 2014.7.0
+
+    env
+        Environment variables to set when invoking npm. Uses the same ``env``
+        format as the :py:func:`cmd.run <salt.modules.cmdmod.run>` execution
+        function.
+
+        .. versionadded:: 2014.7.0
+
+    silent
+        Whether or not to run NPM install with --silent flag.
+
+        .. versionadded:: 2016.3.0
+
+    dry_run
+        Whether or not to run NPM install with --dry-run flag.
+
+        .. versionadded:: 2015.8.4
+
+    silent
+        Whether or not to run NPM install with --silent flag.
+
+        .. versionadded:: 2015.8.5
 
     CLI Example:
 
@@ -82,20 +127,46 @@ def install(pkg=None,
         salt '*' npm.install coffee-script@1.0.1
 
     '''
-    _check_valid_version()
+    # Protect against injection
+    if pkg:
+        pkg = _cmd_quote(pkg)
+    if pkgs:
+        pkg_list = []
+        for item in pkgs:
+            pkg_list.append(_cmd_quote(item))
+        pkgs = pkg_list
+    if registry:
+        registry = _cmd_quote(registry)
 
-    cmd = 'npm install --silent --json'
+    cmd = ['npm', 'install']
+    if silent:
+        cmd.append('--silent')
+    cmd.append('--json')
 
     if dir is None:
-        cmd += ' --global'
+        cmd.append(' --global')
 
     if registry:
-        cmd += ' --registry="{0}"'.format(registry)
+        cmd.append(' --registry="{0}"'.format(registry))
+
+    if dry_run:
+        cmd.append('--dry-run')
 
     if pkg:
-        cmd += ' "{0}"'.format(pkg)
+        cmd.append(pkg)
+    elif pkgs:
+        cmd.extend(pkgs)
 
-    result = __salt__['cmd.run_all'](cmd, cwd=dir, runas=runas)
+    if env is None:
+        env = {}
+
+    if runas:
+        uid = salt.utils.get_uid(runas)
+        if uid:
+            env.update({'SUDO_UID': b'{0}'.format(uid), 'SUDO_USER': b''})
+
+    cmd = ' '.join(cmd)
+    result = __salt__['cmd.run_all'](cmd, python_shell=True, cwd=dir, runas=runas, env=env)
 
     if result['retcode'] != 0:
         raise CommandExecutionError(result['stderr'])
@@ -127,7 +198,8 @@ def install(pkg=None,
 
 def uninstall(pkg,
               dir=None,
-              runas=None):
+              runas=None,
+              env=None):
     '''
     Uninstall an NPM package.
 
@@ -143,6 +215,13 @@ def uninstall(pkg,
     runas
         The user to run NPM with
 
+    env
+        Environment variables to set when invoking npm. Uses the same ``env``
+        format as the :py:func:`cmd.run <salt.modules.cmdmod.run>` execution
+        function.
+
+        .. versionadded:: 2015.5.3
+
     CLI Example:
 
     .. code-block:: bash
@@ -150,7 +229,17 @@ def uninstall(pkg,
         salt '*' npm.uninstall coffee-script
 
     '''
-    _check_valid_version()
+    # Protect against injection
+    if pkg:
+        pkg = _cmd_quote(pkg)
+
+    if env is None:
+        env = {}
+
+    if runas:
+        uid = salt.utils.get_uid(runas)
+        if uid:
+            env.update({'SUDO_UID': b'{0}'.format(uid), 'SUDO_USER': b''})
 
     cmd = 'npm uninstall'
 
@@ -159,7 +248,7 @@ def uninstall(pkg,
 
     cmd += ' "{0}"'.format(pkg)
 
-    result = __salt__['cmd.run_all'](cmd, cwd=dir, runas=runas)
+    result = __salt__['cmd.run_all'](cmd, python_shell=True, cwd=dir, runas=runas, env=env)
 
     if result['retcode'] != 0:
         log.error(result['stderr'])
@@ -167,7 +256,10 @@ def uninstall(pkg,
     return True
 
 
-def list_(pkg=None, dir=None):
+def list_(pkg=None,
+          dir=None,
+          runas=None,
+          env=None):
     '''
     List installed NPM packages.
 
@@ -181,6 +273,18 @@ def list_(pkg=None, dir=None):
         The directory whose packages will be listed, or None for global
         installation
 
+    runas
+        The user to run NPM with
+
+        .. versionadded:: 2014.7.0
+
+    env
+        Environment variables to set when invoking npm. Uses the same ``env``
+        format as the :py:func:`cmd.run <salt.modules.cmdmod.run>` execution
+        function.
+
+        .. versionadded:: 2014.7.0
+
     CLI Example:
 
     .. code-block:: bash
@@ -188,9 +292,19 @@ def list_(pkg=None, dir=None):
         salt '*' npm.list
 
     '''
-    _check_valid_version()
+    # Protect against injection
+    if pkg:
+        pkg = _cmd_quote(pkg)
 
-    cmd = 'npm list --json'
+    if env is None:
+        env = {}
+
+    if runas:
+        uid = salt.utils.get_uid(runas)
+        if uid:
+            env.update({'SUDO_UID': b'{0}'.format(uid), 'SUDO_USER': b''})
+
+    cmd = 'npm list --silent --json'
 
     if dir is None:
         cmd += ' --global'
@@ -198,7 +312,13 @@ def list_(pkg=None, dir=None):
     if pkg:
         cmd += ' "{0}"'.format(pkg)
 
-    result = __salt__['cmd.run_all'](cmd, cwd=dir, ignore_retcode=True)
+    result = __salt__['cmd.run_all'](
+            cmd,
+            cwd=dir,
+            runas=runas,
+            env=env,
+            python_shell=True,
+            ignore_retcode=True)
 
     # npm will return error code 1 for both no packages found and an actual
     # error. The only difference between the two cases are if stderr is empty
@@ -206,3 +326,150 @@ def list_(pkg=None, dir=None):
         raise CommandExecutionError(result['stderr'])
 
     return json.loads(result['stdout']).get('dependencies', {})
+
+
+def cache_clean(path=None,
+                runas=None,
+                env=None):
+    '''
+    Clean cached NPM packages.
+
+    If no path for a specific package is provided the entire cache will be cleared.
+
+    path
+        The cache subpath to delete, or None to clear the entire cache
+
+    runas
+        The user to run NPM with
+
+    env
+        Environment variables to set when invoking npm. Uses the same ``env``
+        format as the :py:func:`cmd.run <salt.modules.cmdmod.run>` execution
+        function.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' npm.cache_clean
+
+    '''
+    if env is None:
+        env = {}
+
+    if runas:
+        uid = salt.utils.get_uid(runas)
+        if uid:
+            env.update({'SUDO_UID': b'{0}'.format(uid), 'SUDO_USER': b''})
+
+    cmd = ['npm', 'cache clean']
+    if path:
+        cmd.append(path)
+
+    cmd = ' '.join(cmd)
+    result = __salt__['cmd.run_all'](
+            cmd,
+            cwd=None,
+            runas=runas,
+            env=env,
+            python_shell=True,
+            ignore_retcode=True)
+
+    if result['retcode'] != 0:
+        log.error(result['stderr'])
+        return False
+    return True
+
+
+def cache_list(path=None,
+               runas=None,
+               env=None):
+    '''
+    List NPM cached packages.
+
+    If no path for a specific package is provided this will list all the cached packages.
+
+    path
+        The cache subpath to list, or None to list the entire cache
+
+    runas
+        The user to run NPM with
+
+    env
+        Environment variables to set when invoking npm. Uses the same ``env``
+        format as the :py:func:`cmd.run <salt.modules.cmdmod.run>` execution
+        function.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' npm.cache_clean
+
+    '''
+    if env is None:
+        env = {}
+
+    if runas:
+        uid = salt.utils.get_uid(runas)
+        if uid:
+            env.update({'SUDO_UID': b'{0}'.format(uid), 'SUDO_USER': b''})
+
+    cmd = ['npm', 'cache ls']
+    if path:
+        cmd.append(path)
+
+    cmd = ' '.join(cmd)
+    result = __salt__['cmd.run_all'](
+            cmd,
+            cwd=None,
+            runas=runas,
+            env=env,
+            python_shell=True,
+            ignore_retcode=True)
+
+    if result['retcode'] != 0 and result['stderr']:
+        raise CommandExecutionError(result['stderr'])
+
+    return result['stdout']
+
+
+def cache_path(runas=None,
+               env=None):
+    '''
+    List path of the NPM cache directory.
+
+    runas
+        The user to run NPM with
+
+    env
+        Environment variables to set when invoking npm. Uses the same ``env``
+        format as the :py:func:`cmd.run <salt.modules.cmdmod.run>` execution
+        function.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' npm.cache_path
+
+    '''
+    if env is None:
+        env = {}
+
+    if runas:
+        uid = salt.utils.get_uid(runas)
+        if uid:
+            env.update({'SUDO_UID': b'{0}'.format(uid), 'SUDO_USER': b''})
+
+    cmd = 'npm config get cache'
+
+    result = __salt__['cmd.run_all'](
+            cmd,
+            cwd=None,
+            runas=runas,
+            env=env,
+            python_shell=True,
+            ignore_retcode=True)
+
+    return result.get('stdout') or result.get('stderr')

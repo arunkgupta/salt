@@ -2,6 +2,7 @@
 '''
 Module for managing Solaris logadm based log rotations.
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import logging
@@ -19,7 +20,7 @@ def __virtual__():
     '''
     if 'Solaris' in __grains__['os_family']:
         return True
-    return False
+    return (False, 'The logadm execution module cannot be loaded: only available on Solaris.')
 
 
 def _parse_conf(conf_file=default_conf):
@@ -81,7 +82,7 @@ def rotate(name,
     if pattern:
         command += " {0}".format(pattern)
 
-    result = __salt__['cmd.run_all'](command)
+    result = __salt__['cmd.run_all'](command, python_shell=False)
     if result['retcode'] != 0:
         return dict(Error='Failed in adding log', Output=result['stderr'])
 
@@ -99,7 +100,7 @@ def remove(name, conf_file=default_conf):
       salt '*' logadm.remove myapplog
     '''
     command = "logadm -f {0} -r {1}".format(conf_file, name)
-    result = __salt__['cmd.run_all'](command)
+    result = __salt__['cmd.run_all'](command, python_shell=False)
     if result['retcode'] != 0:
         return dict(
             Error='Failure in removing log. Possibly already removed?',

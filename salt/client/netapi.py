@@ -3,14 +3,15 @@
 The main entry point for salt-api
 '''
 # Import python libs
-import logging
-import multiprocessing
+from __future__ import absolute_import
 import signal
+import logging
 
 # Import salt-api libs
 import salt.loader
+import salt.utils.process
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 class NetapiClient(object):
@@ -19,27 +20,35 @@ class NetapiClient(object):
     '''
     def __init__(self, opts):
         self.opts = opts
-        self.processes = []
+        self.process_manager = salt.utils.process.ProcessManager(name='NetAPIProcessManager')
+        self.netapi = salt.loader.netapi(self.opts)
 
     def run(self):
         '''
         Load and start all available api modules
         '''
-        netapi = salt.loader.netapi(self.opts)
-        for fun in netapi:
+        if not len(self.netapi):
+            log.error("Did not find any netapi configurations, nothing to start")
+
+        for fun in self.netapi:
             if fun.endswith('.start'):
-                logger.info("Starting '{0}' api module".format(fun))
-                p = multiprocessing.Process(target=netapi[fun])
-                p.start()
-                self.processes.append(p)
+                log.info('Starting {0} netapi module'.format(fun))
+                self.process_manager.add_process(self.netapi[fun])
 
-        # make sure to kill the subprocesses if the parent is killed
-        signal.signal(signal.SIGTERM, self.kill_children)
+        # Install the SIGINT/SIGTERM handlers if not done so far
+        if signal.getsignal(signal.SIGINT) is signal.SIG_DFL:
+            # No custom signal handling was added, install our own
+            signal.signal(signal.SIGINT, self._handle_signals)
 
-    def kill_children(self, *args):
-        '''
-        Kill all of the children
-        '''
-        for p in self.processes:
-            p.terminate()
-            p.join()
+        if signal.getsignal(signal.SIGTERM) is signal.SIG_DFL:
+            # No custom signal handling was added, install our own
+            signal.signal(signal.SIGINT, self._handle_signals)
+
+        self.process_manager.run()
+
+    def _handle_signals(self, signum, sigframe):  # pylint: disable=unused-argument
+        # escalate the signals to the process manager
+        self.process_manager.stop_restarting()
+        self.process_manager.send_signal_to_processes(signum)
+        # kill any remaining processes
+        self.process_manager.kill_children()

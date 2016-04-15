@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
 '''
 Service support for RHEL-based systems, including support for both upstart and sysvinit
+
+.. important::
+    If you feel that Salt should be using this module to manage services on a
+    minion, and it is using a different module (or gives an error similar to
+    *'service.start' is not available*), see :ref:`here
+    <module-provider-override>`.
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import glob
@@ -43,6 +50,7 @@ def __virtual__():
     '''
     # Enable on these platforms only.
     enable = set((
+        'XenServer',
         'RedHat',
         'CentOS',
         'ScientificLinux',
@@ -52,21 +60,37 @@ def __virtual__():
         'ALT',
         'OEL',
         'SUSE  Enterprise Server',
+        'SUSE',
         'McAfee  OS Server'
     ))
     if __grains__['os'] in enable:
-        try:
-            osrelease = float(__grains__.get('osrelease', 0))
-        except ValueError:
-            return False
+        if __grains__['os'] == 'XenServer':
+            return __virtualname__
+
+        if __grains__['os'] == 'SUSE':
+            if str(__grains__['osrelease']).startswith('11'):
+                return __virtualname__
+            else:
+                return (False, 'Cannot load rh_service module on SUSE > 11')
+
+        osrelease_major = __grains__.get('osrelease_info', [0])[0]
+
         if __grains__['os'] == 'Fedora':
-            if osrelease > 15:
-                return False
-        if __grains__['os'] in ('RedHat', 'CentOS', 'ScientificLinux'):
-            if osrelease >= 7:
-                return False
+            if osrelease_major >= 15:
+                return (
+                    False,
+                    'Fedora >= 15 uses systemd, will not load rh_service.py '
+                    'as virtual \'service\''
+                )
+        if __grains__['os'] in ('RedHat', 'CentOS', 'ScientificLinux', 'OEL', 'CloudLinux'):
+            if osrelease_major >= 7:
+                return (
+                    False,
+                    'RedHat-based distros >= version 7 use systemd, will not '
+                    'load rh_service.py as virtual \'service\''
+                )
         return __virtualname__
-    return False
+    return (False, 'Cannot load rh_service module: OS not in {0}'.format(enable))
 
 
 def _runlevel():
@@ -91,7 +115,7 @@ def _chkconfig_add(name):
     run-levels.
     '''
     cmd = '/sbin/chkconfig --add {0}'.format(name)
-    if __salt__['cmd.retcode'](cmd) == 0:
+    if __salt__['cmd.retcode'](cmd, python_shell=False) == 0:
         log.info('Added initscript "{0}" to chkconfig'.format(name))
         return True
     else:
@@ -124,7 +148,7 @@ def _service_is_chkconfig(name):
     Return True if the service is managed by chkconfig.
     '''
     cmdline = '/sbin/chkconfig --list {0}'.format(name)
-    return __salt__['cmd.retcode'](cmdline, ignore_retcode=True) == 0
+    return __salt__['cmd.retcode'](cmdline, python_shell=False, ignore_retcode=True) == 0
 
 
 def _sysv_is_enabled(name, runlevel=None):
@@ -146,23 +170,22 @@ def _sysv_is_enabled(name, runlevel=None):
 
 def _chkconfig_is_enabled(name, runlevel=None):
     '''
-    Return True if the service is enabled according to chkconfig; otherwise
-    return False.  If `runlevel` is None, then use the current runlevel.
+    Return ``True`` if the service is enabled according to chkconfig; otherwise
+    return ``False``.  If ``runlevel`` is ``None``, then use the current
+    runlevel.
     '''
     cmdline = '/sbin/chkconfig --list {0}'.format(name)
-    result = __salt__['cmd.run_all'](cmdline)
+    result = __salt__['cmd.run_all'](cmdline, python_shell=False)
+
+    if runlevel is None:
+        runlevel = _runlevel()
     if result['retcode'] == 0:
-        cols = result['stdout'].splitlines()[0].split()
-        try:
-            if cols[0].strip(':') == name:
-                if runlevel is None:
-                    runlevel = _runlevel()
-                if len(cols) > 3 and '{0}:on'.format(runlevel) in cols:
+        for row in result['stdout'].splitlines():
+            if '{0}:on'.format(runlevel) in row:
+                if row.split()[0] == name:
                     return True
-                elif len(cols) < 3 and cols[1] and cols[1] == 'on':
-                    return True
-        except IndexError:
-            pass
+            elif row.split() == [name + ':', 'on']:
+                return True
     return False
 
 
@@ -175,7 +198,7 @@ def _sysv_enable(name):
     if not _service_is_chkconfig(name) and not _chkconfig_add(name):
         return False
     cmd = '/sbin/chkconfig {0} on'.format(name)
-    return not __salt__['cmd.retcode'](cmd)
+    return not __salt__['cmd.retcode'](cmd, python_shell=False)
 
 
 def _sysv_disable(name):
@@ -188,7 +211,29 @@ def _sysv_disable(name):
     if not _service_is_chkconfig(name) and not _chkconfig_add(name):
         return False
     cmd = '/sbin/chkconfig {0} off'.format(name)
+    return not __salt__['cmd.retcode'](cmd, python_shell=False)
+
+
+def _sysv_delete(name):
+    '''
+    Delete the named sysv service from the system. The service will be
+    deleted using chkconfig.
+    '''
+    if not _service_is_chkconfig(name):
+        return False
+    cmd = '/sbin/chkconfig --del {0}'.format(name)
     return not __salt__['cmd.retcode'](cmd)
+
+
+def _upstart_delete(name):
+    '''
+    Delete an upstart service. This will only rename the .conf file
+    '''
+    if HAS_UPSTART:
+        if os.path.exists('/etc/init/{0}.conf'.format(name)):
+            os.rename('/etc/init/{0}.conf'.format(name),
+                      '/etc/init/{0}.conf.removed'.format(name))
+    return True
 
 
 def _upstart_services():
@@ -206,9 +251,17 @@ def _sysv_services():
     '''
     Return list of sysv services.
     '''
-    ret = []
-    return [name for name in os.listdir('/etc/init.d')
-        if _service_is_sysv(name)]
+    _services = []
+    output = __salt__['cmd.run'](['chkconfig', '--list'], python_shell=False)
+    for line in output.splitlines():
+        comps = line.split()
+        try:
+            if comps[1].startswith('0:'):
+                _services.append(comps[0])
+        except IndexError:
+            continue
+    # Return only the services that have an initscript present
+    return [x for x in _services if _service_is_sysv(x)]
 
 
 def get_enabled(limit=''):
@@ -353,7 +406,7 @@ def start(name):
         cmd = 'start {0}'.format(name)
     else:
         cmd = '/sbin/service {0} start'.format(name)
-    return not __salt__['cmd.retcode'](cmd)
+    return not __salt__['cmd.retcode'](cmd, python_shell=False)
 
 
 def stop(name):
@@ -370,7 +423,7 @@ def stop(name):
         cmd = 'stop {0}'.format(name)
     else:
         cmd = '/sbin/service {0} stop'.format(name)
-    return not __salt__['cmd.retcode'](cmd)
+    return not __salt__['cmd.retcode'](cmd, python_shell=False)
 
 
 def restart(name):
@@ -387,7 +440,7 @@ def restart(name):
         cmd = 'restart {0}'.format(name)
     else:
         cmd = '/sbin/service {0} restart'.format(name)
-    return not __salt__['cmd.retcode'](cmd)
+    return not __salt__['cmd.retcode'](cmd, python_shell=False)
 
 
 def reload_(name):
@@ -404,7 +457,7 @@ def reload_(name):
         cmd = 'reload {0}'.format(name)
     else:
         cmd = '/sbin/service {0} reload'.format(name)
-    return not __salt__['cmd.retcode'](cmd)
+    return not __salt__['cmd.retcode'](cmd, python_shell=False)
 
 
 def status(name, sig=None):
@@ -420,11 +473,29 @@ def status(name, sig=None):
     '''
     if _service_is_upstart(name):
         cmd = 'status {0}'.format(name)
-        return 'start/running' in __salt__['cmd.run'](cmd)
+        return 'start/running' in __salt__['cmd.run'](cmd, python_shell=False)
     if sig:
         return bool(__salt__['status.pid'](sig))
     cmd = '/sbin/service {0} status'.format(name)
-    return __salt__['cmd.retcode'](cmd, ignore_retcode=True) == 0
+    return __salt__['cmd.retcode'](cmd, python_shell=False, ignore_retcode=True) == 0
+
+
+def delete(name, **kwargs):
+    '''
+    Delete the named service
+
+    .. versionadded:: 2016.3
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' service.delete <service name>
+    '''
+    if _service_is_upstart(name):
+        return _upstart_delete(name)
+    else:
+        return _sysv_delete(name)
 
 
 def enable(name, **kwargs):
@@ -459,7 +530,7 @@ def disable(name, **kwargs):
         return _sysv_disable(name)
 
 
-def enabled(name):
+def enabled(name, **kwargs):
     '''
     Check to see if the named service is enabled to start on boot
 

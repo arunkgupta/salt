@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+
+from __future__ import absolute_import
+
 # Import python libs
 import os
 
@@ -42,6 +45,6 @@ def config():
             try:
                 return yaml.safe_load(fp_.read())
             except Exception:
-                log.warn("Bad syntax in grains file! Skipping.")
+                log.warning("Bad syntax in grains file! Skipping.")
                 return {}
     return {}

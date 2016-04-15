@@ -8,6 +8,7 @@ user present with custom homedir
 '''
 
 # Import python libs
+from __future__ import absolute_import
 import os
 import grp
 
@@ -21,6 +22,7 @@ from salttesting.helpers import (
 ensure_in_syspath('../../')
 
 # Import salt libs
+import salt.utils
 import integration
 
 
@@ -63,6 +65,27 @@ class UserTest(integration.ModuleCase,
 
     @destructiveTest
     @skipIf(os.geteuid() != 0, 'you must be root to run this test')
+    def test_user_present_when_home_dir_does_not_18843(self):
+        '''
+        This is a DESTRUCTIVE TEST it creates a new user on the minion.
+        And then destroys that user.
+        Assume that it will break any system you run it on.
+        '''
+        HOMEDIR = '/home/home_of_salt_test'
+        ret = self.run_state('user.present', name='salt_test',
+                             home=HOMEDIR)
+        self.assertSaltTrueReturn(ret)
+
+        self.run_function('file.absent', name=HOMEDIR)
+        ret = self.run_state('user.present', name='salt_test',
+                             home=HOMEDIR)
+        self.assertSaltTrueReturn(ret)
+
+        ret = self.run_state('user.absent', name='salt_test')
+        self.assertSaltTrueReturn(ret)
+
+    @destructiveTest
+    @skipIf(os.geteuid() != 0, 'you must be root to run this test')
     def test_user_present_nondefault(self):
         '''
         This is a DESTRUCTIVE TEST it creates a new user on the on the minion.
@@ -85,8 +108,12 @@ class UserTest(integration.ModuleCase,
         If you run the test and it fails, please fix the code it's testing to
         work on your operating system.
         '''
+        # MacOS users' primary group defaults to staff (20), not the name of
+        # user
+        gid_from_name = False if grains['os_family'] == 'MacOS' else True
+
         ret = self.run_state('user.present', name='salt_test',
-                             gid_from_name=True, home='/var/lib/salt_test')
+                             gid_from_name=gid_from_name, home='/var/lib/salt_test')
         self.assertSaltTrueReturn(ret)
 
         ret = self.run_function('user.info', ['salt_test'])
@@ -96,6 +123,8 @@ class UserTest(integration.ModuleCase,
         self.assertTrue(os.path.isdir('/var/lib/salt_test'))
         if grains['os_family'] in ('Suse',):
             self.assertEqual(group_name, 'users')
+        elif grains['os_family'] == 'MacOS':
+            self.assertEqual(group_name, 'staff')
         else:
             self.assertEqual(group_name, 'salt_test')
 
@@ -143,6 +172,33 @@ class UserTest(integration.ModuleCase,
             workphone=1234567890, homephone=1234567890
         )
         self.assertSaltTrueReturn(ret)
+        ret = self.run_state('user.absent', name='salt_test')
+        self.assertSaltTrueReturn(ret)
+
+    @destructiveTest
+    @skipIf(os.geteuid() != 0, 'you must be root to run this test')
+    def test_user_present_gecos_none_fields(self):
+        '''
+        This is a DESTRUCTIVE TEST it creates a new user on the on the minion.
+
+        It ensures that if no GECOS data is supplied, the fields will be coerced
+        into empty strings as opposed to the string "None".
+        '''
+        ret = self.run_state(
+            'user.present', name='salt_test', fullname=None, roomnumber=None,
+            workphone=None, homephone=None
+        )
+        self.assertSaltTrueReturn(ret)
+
+        ret = self.run_function('user.info', ['salt_test'])
+        self.assertReturnNonEmptySaltType(ret)
+        self.assertEqual('', ret['fullname'])
+        # MacOS does not supply the following GECOS fields
+        if not salt.utils.is_darwin():
+            self.assertEqual('', ret['roomnumber'])
+            self.assertEqual('', ret['workphone'])
+            self.assertEqual('', ret['homephone'])
+
         ret = self.run_state('user.absent', name='salt_test')
         self.assertSaltTrueReturn(ret)
 

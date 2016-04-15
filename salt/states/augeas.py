@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 '''
 Configuration management using Augeas
-=====================================
 
 .. versionadded:: 0.17.0
 
@@ -28,20 +27,91 @@ Augeas_ can be used to manage configuration files.
     known to resolve the issue.
 
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import re
 import os.path
+import logging
 import difflib
+
+# Import Salt libs
+import salt.utils
+
+from salt.modules.augeas_cfg import METHOD_MAP
+
+log = logging.getLogger(__name__)
 
 
 def __virtual__():
     return 'augeas' if 'augeas.execute' in __salt__ else False
 
 
-def change(name, context=None, changes=None, lens=None, **kwargs):
+def _workout_filename(filename):
     '''
-    .. versionadded:: 2014.1.6
+    Recursively workout the file name from an augeas change
+    '''
+    if os.path.isfile(filename) or filename == '/':
+        if filename == '/':
+            filename = None
+        return filename
+    else:
+        return _workout_filename(os.path.dirname(filename))
+
+
+def _check_filepath(changes):
+    '''
+    Ensure all changes are fully qualified and affect only one file.
+    This ensures that the diff output works and a state change is not
+    incorrectly reported.
+    '''
+    filename = None
+    for change_ in changes:
+        try:
+            cmd, arg = change_.split(' ', 1)
+
+            if cmd not in METHOD_MAP:
+                error = 'Command {0} is not supported (yet)'.format(cmd)
+                raise ValueError(error)
+            method = METHOD_MAP[cmd]
+            parts = salt.utils.shlex_split(arg)
+            if method in ['set', 'setm', 'move', 'remove']:
+                filename_ = parts[0]
+            else:
+                _, _, filename_ = parts
+            if not filename_.startswith('/files'):
+                error = 'Changes should be prefixed with ' \
+                        '/files if no context is provided,' \
+                        ' change: {0}'.format(change_)
+                raise ValueError(error)
+            filename_ = re.sub('^/files|/$', '', filename_)
+            if filename is not None:
+                if filename != filename_:
+                    error = 'Changes should be made to one ' \
+                            'file at a time, detected changes ' \
+                            'to {0} and {1}'.format(filename, filename_)
+                    raise ValueError(error)
+            filename = filename_
+        except (ValueError, IndexError) as err:
+            log.error(str(err))
+            if 'error' not in locals():
+                error = 'Invalid formatted command, ' \
+                               'see debug log for details: {0}' \
+                               .format(change_)
+            else:
+                error = str(err)
+            raise ValueError(error)
+
+    filename = _workout_filename(filename)
+
+    return filename
+
+
+def change(name, context=None, changes=None, lens=None,
+        load_path=None, **kwargs):
+    '''
+    .. versionadded:: 2014.7.0
+
     This state replaces :py:func:`~salt.states.augeas.setvalue`.
 
     Issue changes to Augeas, optionally for a specific context, with a
@@ -51,8 +121,15 @@ def change(name, context=None, changes=None, lens=None, **kwargs):
         State name
 
     context
-        The context to use. Set this to a file path, prefixed by ``/files``, to
-        avoid redundancy, eg:
+        A file path, prefixed by ``/files``. Should resolve to an actual file
+        (not an arbitrary augeas path). This is used to avoid duplicating the
+        file name for each item in the changes list (for example, ``set bind 0.0.0.0``
+        in the example below operates on the file specified by ``context``). If
+        ``context`` is not specified, a file path prefixed by ``/files`` should be
+        included with the ``set`` command.
+
+        The file path is examined to determine if the
+        specified changes are already present.
 
         .. code-block:: yaml
 
@@ -65,12 +142,20 @@ def change(name, context=None, changes=None, lens=None, **kwargs):
 
     changes
         List of changes that are issued to Augeas. Available commands are
-        ``set``, ``mv``/``move``, ``ins``/``insert``, and ``rm``/``remove``.
+        ``set``, ``setm``, ``mv``/``move``, ``ins``/``insert``, and
+        ``rm``/``remove``.
 
     lens
-        The lens to use, needs to be suffixed with `.lns`, eg: `Nginx.lns`. See
-        the `list of stock lenses <http://augeas.net/stock_lenses.html>`_
+        The lens to use, needs to be suffixed with `.lns`, e.g.: `Nginx.lns`.
+        See the `list of stock lenses <http://augeas.net/stock_lenses.html>`_
         shipped with Augeas.
+
+    .. versionadded:: 2016.3.0
+
+    load_path
+        A list of directories that modules should be searched in. This is in
+        addition to the standard load path and the directories in
+        AUGEAS_LENS_LIB.
 
 
     Usage examples:
@@ -153,7 +238,7 @@ def change(name, context=None, changes=None, lens=None, **kwargs):
     .. warning::
 
         Don't forget the ``unless`` here, otherwise a new entry will be added
-        everytime this state is run.
+        every time this state is run.
 
     '''
     ret = {'name': name, 'result': False, 'comment': '', 'changes': {}}
@@ -162,23 +247,40 @@ def change(name, context=None, changes=None, lens=None, **kwargs):
         ret['comment'] = '\'changes\' must be specified as a list'
         return ret
 
+    if load_path is not None:
+        if not isinstance(load_path, list):
+            ret['comment'] = '\'load_path\' must be specified as a list'
+            return ret
+        else:
+            load_path = ':'.join(load_path)
+
+    filename = None
+    if context is None:
+        try:
+            filename = _check_filepath(changes)
+        except ValueError as err:
+            ret['comment'] = 'Error: {0}'.format(str(err))
+            return ret
+    else:
+        filename = re.sub('^/files|/$', '', context)
+
     if __opts__['test']:
         ret['result'] = None
         ret['comment'] = 'Executing commands'
         if context:
-            ret['comment'] += ' in file "{1}"'.format(context)
+            ret['comment'] += ' in file "{0}":\n'.format(context)
         ret['comment'] += "\n".join(changes)
         return ret
 
     old_file = []
-    if context:
-        filename = re.sub('^/files|/$', '', context)
+    if filename is not None:
         if os.path.isfile(filename):
-            file = open(filename, 'r')
-            old_file = file.readlines()
-            file.close()
+            with salt.utils.fopen(filename, 'r') as file_:
+                old_file = file_.readlines()
 
-    result = __salt__['augeas.execute'](context=context, lens=lens, commands=changes)
+    result = __salt__['augeas.execute'](
+        context=context, lens=lens,
+        commands=changes, load_path=load_path)
     ret['result'] = result['retval']
 
     if ret['result'] is False:
@@ -186,64 +288,18 @@ def change(name, context=None, changes=None, lens=None, **kwargs):
         return ret
 
     if old_file:
-        file = open(filename, 'r')
-        diff = ''.join(difflib.unified_diff(old_file, file.readlines(), n=0))
-        file.close()
+        with salt.utils.fopen(filename, 'r') as file_:
+            diff = ''.join(
+                difflib.unified_diff(old_file, file_.readlines(), n=0))
 
         if diff:
             ret['comment'] = 'Changes have been saved'
-            ret['changes'] = diff
+            ret['changes'] = {'diff': diff}
         else:
             ret['comment'] = 'No changes made'
 
     else:
         ret['comment'] = 'Changes have been saved'
-        ret['changes'] = changes
+        ret['changes'] = {'updates': changes}
 
-    return ret
-
-
-def setvalue(name, prefix=None, changes=None, **kwargs):
-    '''
-    .. deprecated:: 2014.1.6
-       Use :py:func:`~salt.states.augeas.change` instead.
-
-    Set a value for a specific augeas path
-    '''
-    ret = {'name': name, 'result': False, 'comment': '', 'changes': {}}
-
-    args = []
-    if not changes:
-        ret['comment'] = '\'changes\' must be specified'
-        return ret
-    else:
-        if not isinstance(changes, list):
-            ret['comment'] = '\'changes\' must be formatted as a list'
-            return ret
-        for change in changes:
-            if not isinstance(change, dict) or len(change) > 1:
-                ret['comment'] = 'Invalidly-formatted change'
-                return ret
-            key = next(iter(change))
-            args.extend([key, change[key]])
-
-    if prefix is not None:
-        args.insert(0, 'prefix={0}'.format(prefix))
-
-    if __opts__['test']:
-        ret['result'] = None
-        ret['comment'] = 'Calling setvalue with {0}'.format(args)
-        return ret
-
-    call = __salt__['augeas.setvalue'](*args)
-
-    ret['result'] = call['retval']
-
-    if ret['result'] is False:
-        ret['comment'] = 'Error: {0}'.format(call['error'])
-        return ret
-
-    ret['comment'] = 'Success'
-    for change in changes:
-        ret['changes'].update(change)
     return ret

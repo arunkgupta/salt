@@ -2,6 +2,7 @@
 '''
 Functions to view the minion's public key information
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import os
@@ -15,15 +16,14 @@ def finger():
     Return the minion's public key fingerprint
 
     CLI Example:
-    dfasdf
 
     .. code-block:: bash
 
         salt '*' key.finger
     '''
-    return salt.utils.pem_finger(
-            os.path.join(__opts__['pki_dir'], 'minion.pub')
-            )
+    # MD5 here is temporary. Change to SHA256 when retired.
+    return salt.utils.pem_finger(os.path.join(__opts__['pki_dir'], 'minion.pub'),
+                                 sum_type=__opts__.get('hash_type', 'md5'))
 
 
 def finger_master():
@@ -36,6 +36,6 @@ def finger_master():
 
         salt '*' key.finger_master
     '''
-    return salt.utils.pem_finger(
-            os.path.join(__opts__['pki_dir'], 'minion_master.pub')
-            )
+    # MD5 here is temporary. Change to SHA256 when retired.
+    return salt.utils.pem_finger(os.path.join(__opts__['pki_dir'], 'minion_master.pub'),
+                                 sum_type=__opts__.get('hash_type', 'md5'))

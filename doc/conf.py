@@ -24,6 +24,8 @@ class Mock(object):
     def __init__(self, *args, **kwargs):
         pass
 
+    __all__ = []
+
     def __call__(self, *args, **kwargs):
         ret = Mock()
         # If mocked function is used as a decorator, expose decorated function.
@@ -42,10 +44,13 @@ class Mock(object):
 MOCK_MODULES = [
     # salt core
     'Crypto',
+    'Crypto.Signature',
     'Crypto.Cipher',
     'Crypto.Hash',
     'Crypto.PublicKey',
     'Crypto.Random',
+    'Crypto.Signature',
+    'Crypto.Signature.PKCS1_v1_5',
     'M2Crypto',
     'msgpack',
     'yaml',
@@ -53,6 +58,8 @@ MOCK_MODULES = [
     'yaml.nodes',
     'yaml.scanner',
     'zmq',
+    'zmq.eventloop',
+    'zmq.eventloop.ioloop',
 
     # third-party libs for cloud modules
     'libcloud',
@@ -77,8 +84,14 @@ MOCK_MODULES = [
     'tornado',
     'tornado.concurrent',
     'tornado.gen',
+    'tornado.httpclient',
     'tornado.httpserver',
+    'tornado.httputil',
     'tornado.ioloop',
+    'tornado.iostream',
+    'tornado.netutil',
+    'tornado.simple_httpclient',
+    'tornado.stack_context',
     'tornado.web',
     'tornado.websocket',
 
@@ -88,28 +101,39 @@ MOCK_MODULES = [
     'ws4py.websocket',
 
     # modules, renderers, states, returners, et al
+    'ClusterShell',
+    'ClusterShell.NodeSet',
     'django',
     'libvirt',
-    'mako',
-    'mako.template',
     'MySQLdb',
     'MySQLdb.cursors',
+    'nagios_json',
     'psutil',
     'pycassa',
     'pymongo',
     'rabbitmq_server',
     'redis',
     'requests',
+    'requests.exceptions',
     'rpm',
     'rpmUtils',
     'rpmUtils.arch',
     'yum',
     'OpenSSL',
-    'zfs'
+    'zfs',
+    'salt.ext.six.moves.winreg',
+    'win32security',
+    'ntsecuritycon',
 ]
 
 for mod_name in MOCK_MODULES:
     sys.modules[mod_name] = Mock()
+
+# Define a fake version attribute for the following libs.
+sys.modules['libcloud'].__version__ = '0.0.0'
+sys.modules['pymongo'].version = '0.0.0'
+sys.modules['ntsecuritycon'].STANDARD_RIGHTS_REQUIRED = 0
+sys.modules['ntsecuritycon'].SYNCHRONIZE = 0
 
 
 # -- Add paths to PYTHONPATH ---------------------------------------------------
@@ -145,12 +169,36 @@ intersphinx_mapping = {
 # -- General Configuration -----------------------------------------------------
 
 project = 'Salt'
-copyright = '2014 SaltStack, Inc.'
+copyright = '2016 SaltStack, Inc.'
 
 version = salt.version.__version__
-#release = '.'.join(map(str, salt.version.__version_info__))
-release = '2014.1.5'
+latest_release = '2015.8.8'  # latest release
+previous_release = '2015.5.10'  # latest release from previous branch
+previous_release_dir = '2015.5'  # path on web server for previous branch
+next_release = '2016.3.0'  # latest release from previous branch
+next_release_dir = '2016.3'  # path on web server for previous branch
+build_type = 'develop'  # latest, previous, develop, next
 
+# set release to 'version' for develop so sha is used
+# - otherwise -
+# set release to 'latest_release' or 'previous_release'
+
+release = latest_release  # version, latest_release, previous_release
+
+# Set google custom search engine
+
+if release == latest_release:
+    search_cx = '004624818632696854117:yfmprrbw3pk' # latest
+elif release.startswith('2014.7'):
+    search_cx = '004624818632696854117:thhslradbru' # 2014.7
+elif release.startswith('2015.5'):
+    search_cx = '004624818632696854117:ovogwef29do' # 2015.5
+else:
+    search_cx = '004624818632696854117:haj7bjntf4s'  # develop
+
+needs_sphinx = '1.3'
+
+spelling_lang = 'en_US'
 language = 'en'
 locale_dirs = [
     '_locale',
@@ -172,21 +220,41 @@ extensions = [
     'shorturls',
 ]
 
+try:
+    import sphinxcontrib.spelling
+except ImportError:
+    pass
+else:
+    extensions += ['sphinxcontrib.spelling']
+
 modindex_common_prefix = ['salt.']
 
 autosummary_generate = True
 
 # Define a substitution for linking to the latest release tarball
 rst_prolog = """\
+.. |current_release_doc| replace:: :doc:`/topics/releases/{release}`
 .. |saltrepo| replace:: https://github.com/saltstack/salt
-"""
+.. _`salt-users`: https://groups.google.com/forum/#!forum/salt-users
+.. _`salt-announce`: https://groups.google.com/forum/#!forum/salt-announce
+.. _`salt-packagers`: https://groups.google.com/forum/#!forum/salt-packagers
+.. |windownload| raw:: html
+
+     <p>x86: <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-2-x86-Setup.exe"><strong>Salt-Minion-{release}-2-x86-Setup.exe</strong></a>
+      | <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-2-x86-Setup.exe.md5"><strong>md5</strong></a></p>
+
+     <p>AMD64: <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-2-AMD64-Setup.exe"><strong>Salt-Minion-{release}-2-AMD64-Setup.exe</strong></a>
+      | <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-2-AMD64-Setup.exe.md5"><strong>md5</strong></a></p>
+
+""".format(release=release)
 
 # A shortcut for linking to tickets on the GitHub issue tracker
 extlinks = {
     'blob': ('https://github.com/saltstack/salt/blob/%s/%%s' % 'develop', None),
     'download': ('https://cloud.github.com/downloads/saltstack/salt/%s', None),
     'issue': ('https://github.com/saltstack/salt/issues/%s', 'issue '),
-    'formula': ('https://github.com/saltstack-formulas/%s', ''),
+    'pull': ('https://github.com/saltstack/salt/pull/%s', 'PR '),
+    'formula_url': ('https://github.com/saltstack-formulas/%s', ''),
 }
 
 
@@ -197,13 +265,13 @@ gettext_compact = False
 
 
 ### HTML options
-html_theme = 'saltstack'
+html_theme = 'saltstack2' #change to 'saltstack' to use previous theme
 html_theme_path = ['_themes']
-html_title = None
+html_title = u''
 html_short_title = 'Salt'
 
 html_static_path = ['_static']
-html_logo = None # specfied in the theme layout.html
+html_logo = None # specified in the theme layout.html
 html_favicon = 'favicon.ico'
 html_use_smartypants = False
 
@@ -248,6 +316,13 @@ html_context = {
     'github_base': 'https://github.com/saltstack/salt',
     'github_issues': 'https://github.com/saltstack/salt/issues',
     'github_downloads': 'https://github.com/saltstack/salt/downloads',
+    'latest_release': latest_release,
+    'previous_release': previous_release,
+    'previous_release_dir': previous_release_dir,
+    'next_release': next_release,
+    'next_release_dir': next_release_dir,
+    'search_cx': search_cx,
+    'build_type': build_type,
 }
 
 html_use_index = True
@@ -257,23 +332,26 @@ html_show_sphinx = True
 html_show_copyright = True
 
 ### Latex options
+
 latex_documents = [
   ('contents', 'Salt.tex', 'Salt Documentation', 'SaltStack, Inc.', 'manual'),
 ]
 
-latex_logo = '_static/salt-logo.pdf'
+latex_logo = '_static/salt-logo.png'
 
 latex_elements = {
     'inputenc': '',     # use XeTeX instead of the inputenc LaTeX package.
     'utf8extra': '',
     'preamble': '''
-
-\usepackage{fontspec}
-\setsansfont{DejaVu Sans}
-\setromanfont{DejaVu Serif}
-\setmonofont{DejaVu Sans Mono}
+    \usepackage{fontspec}
+    \setsansfont{Linux Biolinum O}
+    \setromanfont{Linux Libertine O}
+    \setmonofont{Source Code Pro}
 ''',
 }
+### Linux Biolinum, Linux Libertine: http://www.linuxlibertine.org/
+### Source Code Pro: https://github.com/adobe-fonts/source-code-pro/releases
+
 
 ### Linkcheck options
 linkcheck_ignore = [r'http://127.0.0.1',
@@ -323,11 +401,14 @@ man_pages = [
     ('ref/cli/salt-key', 'salt-key', 'salt-key Documentation', authors, 1),
     ('ref/cli/salt-cp', 'salt-cp', 'salt-cp Documentation', authors, 1),
     ('ref/cli/salt-call', 'salt-call', 'salt-call Documentation', authors, 1),
+    ('ref/cli/salt-proxy', 'salt-proxy', 'salt-proxy Documentation', authors, 1),
     ('ref/cli/salt-syndic', 'salt-syndic', 'salt-syndic Documentation', authors, 1),
     ('ref/cli/salt-run', 'salt-run', 'salt-run Documentation', authors, 1),
     ('ref/cli/salt-ssh', 'salt-ssh', 'salt-ssh Documentation', authors, 1),
     ('ref/cli/salt-cloud', 'salt-cloud', 'Salt Cloud Command', authors, 1),
     ('ref/cli/salt-api', 'salt-api', 'salt-api Command', authors, 1),
+    ('ref/cli/salt-unity', 'salt-unity', 'salt-unity Command', authors, 1),
+    ('ref/cli/spm', 'spm', 'Salt Package Manager Command', authors, 1),
 ]
 
 
@@ -338,7 +419,7 @@ epub_publisher = epub_author
 epub_copyright = copyright
 
 epub_scheme = 'URL'
-epub_identifier = 'http://saltstack.org/'
+epub_identifier = 'http://saltstack.com/'
 
 #epub_tocdepth = 3
 

@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
 '''
-Manage the shadow file
+Manage the shadow file on Linux systems
+
+.. important::
+    If you feel that Salt should be using this module to manage passwords on a
+    minion, and it is using a different module (or gives an error similar to
+    *'shadow.info' is not available*), see :ref:`here
+    <module-provider-override>`.
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import os
@@ -87,7 +94,7 @@ def set_inactdays(name, inactdays):
     if inactdays == pre_info['inact']:
         return True
     cmd = 'chage -I {0} {1}'.format(inactdays, name)
-    __salt__['cmd.run'](cmd)
+    __salt__['cmd.run'](cmd, python_shell=False)
     post_info = info(name)
     if post_info['inact'] != pre_info['inact']:
         return post_info['inact'] == inactdays
@@ -108,7 +115,7 @@ def set_maxdays(name, maxdays):
     if maxdays == pre_info['max']:
         return True
     cmd = 'chage -M {0} {1}'.format(maxdays, name)
-    __salt__['cmd.run'](cmd)
+    __salt__['cmd.run'](cmd, python_shell=False)
     post_info = info(name)
     if post_info['max'] != pre_info['max']:
         return post_info['max'] == maxdays
@@ -128,7 +135,7 @@ def set_mindays(name, mindays):
     if mindays == pre_info['min']:
         return True
     cmd = 'chage -m {0} {1}'.format(mindays, name)
-    __salt__['cmd.run'](cmd)
+    __salt__['cmd.run'](cmd, python_shell=False)
     post_info = info(name)
     if post_info['min'] != pre_info['min']:
         return post_info['min'] == mindays
@@ -137,7 +144,15 @@ def set_mindays(name, mindays):
 
 def gen_password(password, crypt_salt=None, algorithm='sha512'):
     '''
+    .. versionadded:: 2014.7.0
+
     Generate hashed password
+
+    .. note::
+
+        When called this function is called directly via remote-execution,
+        the password argument may be displayed in the system's process list.
+        This may be a security risk on certain systems.
 
     password
         Plaintext password to be hashed.
@@ -159,7 +174,7 @@ def gen_password(password, crypt_salt=None, algorithm='sha512'):
     .. code-block:: bash
 
         salt '*' shadow.gen_password 'I_am_password'
-        salt '*' shadow.gen_password 'I_am_password' crypt_salt'I_am_salt' algorithm=sha256
+        salt '*' shadow.gen_password 'I_am_password' crypt_salt='I_am_salt' algorithm=sha256
     '''
     if not HAS_CRYPT:
         raise CommandExecutionError(
@@ -171,6 +186,8 @@ def gen_password(password, crypt_salt=None, algorithm='sha512'):
 
 def del_password(name):
     '''
+    .. versionadded:: 2014.7.0
+
     Delete the password from name user
 
     CLI Example:
@@ -180,7 +197,7 @@ def del_password(name):
         salt '*' shadow.del_password username
     '''
     cmd = 'passwd -d {0}'.format(name)
-    __salt__['cmd.run'](cmd, output_loglevel='quiet')
+    __salt__['cmd.run'](cmd, python_shell=False, output_loglevel='quiet')
     uinfo = info(name)
     return not uinfo['passwd']
 
@@ -235,7 +252,7 @@ def set_password(name, password, use_usermod=False):
     else:
         # Use usermod -p (less secure, but more feature-complete)
         cmd = 'usermod -p {0} {1}'.format(name, password)
-        __salt__['cmd.run'](cmd, output_loglevel='quiet')
+        __salt__['cmd.run'](cmd, python_shell=False, output_loglevel='quiet')
         uinfo = info(name)
         return uinfo['passwd'] == password
 
@@ -255,7 +272,7 @@ def set_warndays(name, warndays):
     if warndays == pre_info['warn']:
         return True
     cmd = 'chage -W {0} {1}'.format(warndays, name)
-    __salt__['cmd.run'](cmd)
+    __salt__['cmd.run'](cmd, python_shell=False)
     post_info = info(name)
     if post_info['warn'] != pre_info['warn']:
         return post_info['warn'] == warndays
@@ -274,12 +291,12 @@ def set_date(name, date):
         salt '*' shadow.set_date username 0
     '''
     cmd = 'chage -d {0} {1}'.format(date, name)
-    __salt__['cmd.run'](cmd)
+    __salt__['cmd.run'](cmd, python_shell=False)
 
 
 def set_expire(name, expire):
     '''
-    .. versionchanged:: Helium
+    .. versionchanged:: 2014.7.0
 
     Sets the value for the date the account expires as days since the epoch
     (January 1, 1970). Using a value of -1 will clear expiration. See man
@@ -292,4 +309,4 @@ def set_expire(name, expire):
         salt '*' shadow.set_expire username -1
     '''
     cmd = 'chage -E {0} {1}'.format(expire, name)
-    __salt__['cmd.run'](cmd)
+    __salt__['cmd.run'](cmd, python_shell=False)
